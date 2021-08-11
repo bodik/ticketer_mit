@@ -7,13 +7,11 @@
 #include <stdio.h>
 #include <string.h>
 
-
-// from k5-int.h
+// k5-int.h
 krb5_error_code decode_krb5_enc_tkt_part(const krb5_data *output, krb5_enc_tkt_part **rep);
 krb5_error_code encode_krb5_enc_tkt_part(const krb5_enc_tkt_part *rep, krb5_data **code);
 void KRB5_CALLCONV krb5_free_enc_tkt_part(krb5_context, krb5_enc_tkt_part *);
 krb5_error_code encode_krb5_ticket(const krb5_ticket *rep, krb5_data **code);
-
 
 // taken from k5-platform.h, original code also cares about optimizing out the zeroing part
 void zapfree(void *ptr, size_t len) {
@@ -25,72 +23,71 @@ void zapfree(void *ptr, size_t len) {
     }
 }
 
-
-void hexdump(const void* data, size_t size) {
-       char ascii[17];
-       size_t i, j;
-       ascii[16] = '\0';
-       for (i = 0; i < size; ++i) {
-               printf("%02X ", ((unsigned char*)data)[i]);
-               if (((unsigned char*)data)[i] >= ' ' && ((unsigned char*)data)[i] <= '~') {
-                       ascii[i % 16] = ((unsigned char*)data)[i];
-               } else {
-                       ascii[i % 16] = '.';
-               }
-               if ((i+1) % 8 == 0 || i+1 == size) {
-                       printf(" ");
-                       if ((i+1) % 16 == 0) {
-                               printf("|  %s \n", ascii);
-                       } else if (i+1 == size) {
-                               ascii[(i+1) % 16] = '\0';
-                               if ((i+1) % 16 <= 8) {
-                                       printf(" ");
-                               }
-                               for (j = (i+1) % 16; j < 16; ++j) {
-                                       printf("   ");
-                               }
-                               printf("|  %s \n", ascii);
-                       }
-               }
-       }
+void hexdump(const void *data, size_t size) {
+    char ascii[17];
+    size_t i, j;
+    ascii[16] = '\0';
+    for (i = 0; i < size; ++i) {
+        printf("%02X ", ((unsigned char *)data)[i]);
+        if (((unsigned char *)data)[i] >= ' ' && ((unsigned char *)data)[i] <= '~') {
+            ascii[i % 16] = ((unsigned char *)data)[i];
+        } else {
+            ascii[i % 16] = '.';
+        }
+        if ((i + 1) % 8 == 0 || i + 1 == size) {
+            printf(" ");
+            if ((i + 1) % 16 == 0) {
+                printf("|  %s \n", ascii);
+            } else if (i + 1 == size) {
+                ascii[(i + 1) % 16] = '\0';
+                if ((i + 1) % 16 <= 8) {
+                    printf(" ");
+                }
+                for (j = (i + 1) % 16; j < 16; ++j) {
+                    printf("   ");
+                }
+                printf("|  %s \n", ascii);
+            }
+        }
+    }
 }
 
-uint8_t* datahex(char* string) {
+uint8_t *datahex(char *string) {
     size_t slength = 0;
     size_t dlength = 0;
-    uint8_t* data = NULL;
+    uint8_t *data = NULL;
     size_t index = 0;
     char c;
     int value = 0;
 
-    if(string == NULL)
+    if (string == NULL)
         return NULL;
- 
+
     slength = strlen(string);
-    if((slength % 2) != 0) // must be even
+    if ((slength % 2) != 0) // must be even
         return NULL;
- 
+
     dlength = slength / 2;
- 
+
     data = malloc(dlength);
     memset(data, 0, dlength);
- 
+
     index = 0;
     while (index < slength) {
         c = string[index];
         value = 0;
-        if(c >= '0' && c <= '9')
-          value = (c - '0');
+        if (c >= '0' && c <= '9')
+            value = (c - '0');
         else if (c >= 'A' && c <= 'F')
-          value = (10 + (c - 'A'));
+            value = (10 + (c - 'A'));
         else if (c >= 'a' && c <= 'f')
-          value = (10 + (c - 'a'));
+            value = (10 + (c - 'a'));
         else {
-          free(data);
-          return NULL;
+            free(data);
+            return NULL;
         }
 
-        data[(index/2)] += value << (((index + 1) % 2) * 4);
+        data[(index / 2)] += value << (((index + 1) % 2) * 4);
 
         index++;
     }
@@ -98,10 +95,9 @@ uint8_t* datahex(char* string) {
     return data;
 }
 
-
 int main(int argc, char *argv[]) {
     char *progname;
-//    krb5_error_code ret;
+    // krb5_error_code ret;
     krb5_context context;
     krb5_keyblock srv_key;
     krb5_principal new_princ;
@@ -123,7 +119,7 @@ int main(int argc, char *argv[]) {
     // prepare args
     srv_key.enctype = 18;
     srv_key.length = 32;
-    srv_key.contents = (krb5_octet *) datahex("9c008f673b0c34d28ff483587f77ddb76f35545fcc69a0ae709f16f20e8765ee");
+    srv_key.contents = (krb5_octet *)datahex("9c008f673b0c34d28ff483587f77ddb76f35545fcc69a0ae709f16f20e8765ee");
     krb5_parse_name(context, "client1", &new_princ);
 
     // resolve default cache and print basic info
