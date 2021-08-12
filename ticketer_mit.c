@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#define SERVICE_KEY "9c008f673b0c34d28ff483587f77ddb76f35545fcc69a0ae709f16f20e8765ee"
+#define NEW_PRINC "client1"
+
 // k5-int.h
 krb5_error_code decode_krb5_enc_tkt_part(const krb5_data *output, krb5_enc_tkt_part **rep);
 krb5_error_code encode_krb5_enc_tkt_part(const krb5_enc_tkt_part *rep, krb5_data **code);
@@ -190,9 +193,9 @@ int main(int argc, char *argv[]) {
 
     // prepare args
     srv_key.enctype = 18;
-    srv_key.length = 32;
-    srv_key.contents = (krb5_octet *)datahex("9c008f673b0c34d28ff483587f77ddb76f35545fcc69a0ae709f16f20e8765ee");
-    krb5_parse_name(context, "client1", &new_princ);
+    srv_key.contents = (krb5_octet *)datahex(SERVICE_KEY);
+    srv_key.length = strlen(SERVICE_KEY) / 2;
+    krb5_parse_name(context, NEW_PRINC, &new_princ);
 
     get_creds(&creds);
     customize_ticket(&creds, &srv_key, &new_princ, &new_ticket);
