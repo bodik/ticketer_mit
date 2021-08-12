@@ -193,9 +193,9 @@ int main(int argc, char *argv[]) {
 
     // prepare args
     srv_key.enctype = 18;
-    srv_key.contents = (krb5_octet *)datahex(SERVICE_KEY);
-    srv_key.length = strlen(SERVICE_KEY) / 2;
-    krb5_parse_name(context, NEW_PRINC, &new_princ);
+    srv_key.contents = (krb5_octet *)datahex(argv[1]);
+    srv_key.length = strlen(argv[1]) / 2;
+    krb5_parse_name(context, argv[2], &new_princ);
 
     get_creds(&creds);
     customize_ticket(&creds, &srv_key, &new_princ, &new_ticket);
